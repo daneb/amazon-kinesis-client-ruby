@@ -14,8 +14,11 @@
 #  permissions and limitations under the License.
 
 require 'aws-sdk-core'
+require 'aws-sdk-kinesis'
 require 'multi_json'
 require 'optparse'
+require 'aws-sdk-cloudwatch'
+Dir["./dto/*.rb"].each {|file| require file }
 
 # @api private
 class SampleProducer
@@ -65,21 +68,36 @@ class SampleProducer
   end
 
   def put_record
-    data = get_data
-    data_blob = MultiJson.dump(data)
+    instanceId = "i-0620fe89332d8290e"
+    data = get_data(instanceId)
+    metric = DTO::SourcingMetric.new(instanceId, data)
+    data_blob = MultiJson.dump(metric)
     r = @kinesis.put_record(:stream_name => @stream_name,
                             :data => data_blob,
-                            :partition_key => data["sensor"])
+                            :partition_key => instanceId)
     puts "Put record to shard '#{r[:shard_id]}' (#{r[:sequence_number]}): '#{MultiJson.dump(data)}'"
   end
 
   private
-  def get_data
-    {
-       "time"=>"#{Time.now.to_f}",
-       "sensor"=>"snsr-#{rand(1_000).to_s.rjust(4,'0')}",
-       "reading"=>"#{rand(1_000_000)}"
-    }
+  def get_data(instanceId)
+    # Get CPU for Now
+    metric = Aws::CloudWatch::Metric.new(
+      'AWS/EC2',
+      'CPUUtilization'
+    )
+    metric.get_statistics({
+      dimensions: [
+        {
+          name: "InstanceId",
+          value: instanceId,
+        },
+      ],
+      start_time: Time.now - 10*60,
+      end_time: Time.now,
+      period: 900, # 15 minutes
+      statistics: ["Average"],
+      unit: "Percent"
+    })
   end
 
   def get_stream_description
@@ -88,7 +106,7 @@ class SampleProducer
   end
 
   def wait_for_stream_to_become_active
-    sleep_time_seconds = 3
+    sleep_time_seconds = 900
     status = get_stream_description[:stream_status]
     while status && status != 'ACTIVE' do
       puts "#{@stream_name} has status: #{status}, sleeping for #{sleep_time_seconds} seconds"
@@ -100,7 +118,7 @@ end
 
 if __FILE__ == $0
   aws_region = nil
-  stream_name = 'kclrbsample'
+  stream_name = 'myTestStream'
   shard_count = nil
   sleep_between_puts = 0.25
   timeout = 0
